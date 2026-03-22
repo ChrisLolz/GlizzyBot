@@ -196,7 +196,7 @@ async def help_command(interaction: discord.Interaction):
         Use the following commands for more options:
         """
     )
-    embed.add_field(value="Attach an image and '@GlizzyBot !edit [prompt]' to edit the image.", inline=False)
+    embed.add_field(name="Image editing",value="Attach an image and '@GlizzyBot !edit [prompt]' to edit the image.", inline=False)
     embed.add_field(name="/models", value="List available models", inline=False)
     embed.add_field(name="/providers", value="List available providers", inline=False)
     embed.add_field(name="/full_list", value="List available providers and their compatible models", inline=False)
