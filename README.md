@@ -7,7 +7,6 @@ Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to g
 
 ## Setup 
 - Open the Discord Developer Portal and create an application.
-- Set up Python
 - Create `.env` and set: `DISCORD_TOKEN`
 
 ## Docker
@@ -20,4 +19,4 @@ Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to g
 
 - Run container:
 
-```docker run -e DISCORD_TOKEN="your-token-here" glizzybot```
+```docker run -e IMAGE_GENERATION_COOLDOWN="15" DISCORD_TOKEN="your-token-here" glizzybot```
