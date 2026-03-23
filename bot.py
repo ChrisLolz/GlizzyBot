@@ -228,7 +228,7 @@ async def kirkify(ctx):
 
         for attempt in range(3):
             try:
-                browser = await zendriver.start(headless=False)
+                browser = await zendriver.start(headless=True)
                 page = await browser.get("https://kirkify.wtf/")
                 page.add_handler(zendriver.cdp.page.JavascriptDialogOpening, on_dialog)
                 await asyncio.sleep(3)
