@@ -1,13 +1,13 @@
 # GlizzyBot
 
-Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to generate images
+Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to generate images and some other AI stuff. Meant for personal usage, not for large scale.
 
 # Prerequisites
 - Python 3.10+
 
 ## Setup 
 - Open the Discord Developer Portal and create an application.
-- Create `.env` and set: `DISCORD_TOKEN`
+- Create `.env`
 
 ## Docker
 
@@ -19,4 +19,4 @@ Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to g
 
 - Run container:
 
-```docker run -e IMAGE_GENERATION_COOLDOWN="15" -e DISCORD_TOKEN="your-token-here" glizzybot```
+```docker run glizzybot```
