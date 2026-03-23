@@ -1,4 +1,6 @@
 discord.py>=2.4.0
 python-dotenv>=1.0.1
 aiohttp>=3.8.0
+zendriver>=0.15.0
+pillow>=9.0.0
 git+https://github.com/ChrisLolz/gpt4free.git#egg=g4f[all]
