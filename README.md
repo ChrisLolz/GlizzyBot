@@ -1,6 +1,8 @@
 # GlizzyBot
 
-Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to generate images and some other AI stuff. Meant for personal usage, not for large scale.
+Discord bot that makes everyone eat a glizzy and it uses qwen3.5-plus model to generate images and some other AI stuff. For face swapping, inswapper_128 is used. 
+
+Meant for personal usage, not for large scale.
 
 # Prerequisites
 - Python 3.10+

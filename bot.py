@@ -1,4 +1,3 @@
-import base64
 import logging
 import os
 import discord
@@ -6,7 +5,6 @@ import aiohttp
 import re
 import asyncio
 import time
-from PIL import Image
 from io import BytesIO
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -14,8 +12,10 @@ from g4f import Provider
 from g4f.client import AsyncClient
 from g4f.providers.any_provider import AnyProvider
 import g4f.debug
-import zendriver
-import tempfile
+import cv2
+import insightface
+import numpy as np
+
 g4f.debug.logging = True
 
 handler = logging.StreamHandler()
@@ -192,81 +192,71 @@ async def generate_image_command(interaction: discord.Interaction, prompt: str):
     except Exception as e:
         await interaction.followup.send(f"Error generating image: {str(e)}")
 
+async def swap_face(source_bytes: bytes, target_bytes: bytes) -> discord.File:
+    """Swap target face with source face and return as a Discord file."""
+    try:
+        app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
+        app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
+        if not os.path.exists("models/inswapper_128.onnx"):
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx") as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        with open("models/inswapper_128.onnx", "wb") as f:
+                            f.write(content)
+                    else:
+                        raise RuntimeError("Failed to download inswapper model.") 
+        swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
+        source_img = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
+        target_img = cv2.imdecode(np.frombuffer(target_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if source_img is None or target_img is None:
+            raise RuntimeError("Failed to decode uploaded images")
+
+        source_faces = app.get(source_img)
+        if not source_faces:
+            raise RuntimeError("No faces detected in the source image")
+        target_faces = app.get(target_img)
+        target_faces = sorted(target_faces, key = lambda x : x.bbox[0])
+        if not target_faces:
+            raise RuntimeError("No faces detected in the target image")
+        
+        source_face = source_faces[0]
+        result = target_img.copy()
+        for face in target_faces:
+            result = swapper.get(result, face, source_face, paste_back=True)
+        _, buffer = cv2.imencode(".jpg", result)
+        return discord.File(BytesIO(buffer.tobytes()), filename="swapped.jpg")
+    except Exception as e:
+        raise RuntimeError(e)
+    
 @client.command()
 async def kirkify(ctx):
     try:
-        print("Kirkifying image...")
-        async with aiohttp.ClientSession() as session:
-            if ctx.message.attachments:
-                image_url = ctx.message.attachments[0].url
-            else:
-                found_url = re.search(r'(https?://\S+)', ctx.message.content)
-                if found_url:
-                    image_url = found_url.group(0)
-                else:
-                    await ctx.send("Please provide a valid image URL or attach an image.")
-                    return
-
-            async with session.get(image_url) as resp:
-                if resp.status != 200:
-                    await ctx.reply(f"Failed to download source image: {resp.status}")
-                    return
-                source_bytes = await resp.read()
-
-        img = Image.open(BytesIO(source_bytes)).convert("RGBA")
-        png_buffer = BytesIO()
-        img.save(png_buffer, format="PNG")
-        png_bytes = png_buffer.getvalue()
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            tmp.write(png_bytes)
-            tmp_path = tmp.name
-
-        async def on_dialog(dialog):
-            print(f"Alert: {dialog.message}")
-            await page.send(zendriver.cdp.page.handle_java_script_dialog(accept=True))
-
-        for attempt in range(3):
-            try:
-                browser = await zendriver.start(headless=True)
-                page = await browser.get("https://kirkify.wtf/")
-                page.add_handler(zendriver.cdp.page.JavascriptDialogOpening, on_dialog)
-                await asyncio.sleep(3)
-                file_input = await page.select('input[type="file"]')
-                await file_input.send_file(tmp_path)
-                await asyncio.sleep(1.5)
-                button = await page.find("generate")
-                await button.click()
-                for _ in range(3):
-                    try:
-                        img_element = await page.select('img[alt="kirked"]')
-                        if img_element:
-                            break
-                    except Exception:
-                        pass
-                src_data = img_element.get("src")
-                if src_data.startswith("data:image/png;base64,"):
-                    img_data = base64.b64decode(src_data.split(",")[1])
-                    await browser.stop()
-                    im = Image.open(BytesIO(img_data)).convert("RGB")
-                    im.thumbnail((1280, 1280))
-                    compressed = BytesIO()
-                    im.save(compressed, format="JPEG", quality=75, optimize=True)
-                    img_data = compressed.getvalue()
-                    await ctx.reply(file=discord.File(BytesIO(img_data), filename="kirkified.png"))
-                    return
-                else:
-                    raise Exception("Unexpected image source format.")
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {str(e)}")
-                await browser.stop()
-        raise Exception("Try again later.")
-
+        if ctx.message.attachments:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://kirkify.wtf/source.png") as resp:
+                    if resp.status == 200:
+                        source_bytes = await resp.read()
+                    else:
+                        raise RuntimeError("Failed to fetch Kirk image.")
+            target = await ctx.message.attachments[0].read()
+            swapped_file = await swap_face(source_bytes, target)
+            await ctx.reply(file=swapped_file)
+        else:
+            await ctx.reply("Please attach an image to kirkify.")
     except Exception as e:
-        await ctx.reply(f"Error processing image: {str(e)}")
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        await ctx.reply(str(e))
+
+@tree.command(name="swap", description="Swap faces in an image")
+async def swap_command(interaction: discord.Interaction, source: discord.Attachment, target: discord.Attachment):
+    await interaction.response.defer()
+    try:
+        source_bytes = await source.read()
+        target_bytes = await target.read()
+        swapped_file = await swap_face(source_bytes, target_bytes)
+        await interaction.followup.send(file=swapped_file)
+    except Exception as e:
+        await interaction.followup.send(f"Error swapping faces: {str(e)}")
 
 @tree.command(name="glizzy", description="Toggle glizzification of images")
 async def glizzy_command(interaction: discord.Interaction):
@@ -288,6 +278,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/glizzy", value="Toggle glizzification of images. When on, any image attached or linked in a user message will be glizzified.", inline=False)
     embed.add_field(name="Image editing",value="Attach an image and '@GlizzyBot !edit [prompt]' to edit the image.", inline=False)
     embed.add_field(name="!kirkify", value="Attach an image or provide an image URL to kirkify it.", inline=False)
+    embed.add_field(name="/swap", value="Swaps the face in the target image with the face in the source image. Works best with full body images.", inline=False)
+    embed.add_field(name="/generate_image", value="Generate an image from a prompt.", inline=False)
     embed.add_field(name="/models", value="List available models", inline=False)
     embed.add_field(name="/providers", value="List available providers", inline=False)
     embed.add_field(name="/full_list", value="List available providers and their compatible models", inline=False)
