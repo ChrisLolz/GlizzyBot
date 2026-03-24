@@ -5,6 +5,7 @@ import aiohttp
 import re
 import asyncio
 import time
+from PIL import Image, ImageSequence
 from io import BytesIO
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -15,6 +16,21 @@ import g4f.debug
 import cv2
 import insightface
 import numpy as np
+
+app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
+app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
+if not os.path.exists("models/inswapper_128.onnx"):
+    with aiohttp.ClientSession() as session:
+        with session.get("https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx") as resp:
+            if resp.status == 200:
+                content = resp.read()
+                with open("models/inswapper_128.onnx", "wb") as f:
+                    f.write(content)
+            else:
+                raise RuntimeError("Failed to download inswapper model.")
+app_gif = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
+app_gif.prepare(ctx_id=0, det_size=(128, 128), det_thresh=0.3)
+swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
 
 g4f.debug.logging = True
 
@@ -48,6 +64,7 @@ model=os.getenv("MODEL", "default")
 provider=os.getenv("PROVIDER")
 image_model=os.getenv("IMAGE_MODEL")
 image_provider=os.getenv("IMAGE_PROVIDER")
+frame_step= int(os.getenv("GIF_FRAME_STEP", 1))
 glizzy=True
 
 async def check_image_url(url: str) -> bool:
@@ -145,26 +162,31 @@ async def setmodel_command(interaction: discord.Interaction, model_name: str, ty
         image_model = model_name
     await interaction.response.send_message(f"Model set to: {model_name}")
 
-@tree.command(name="edit_url", description="Edit an image with a url")
-async def edit_command(interaction: discord.Interaction, image_url: str, prompt: str):
-    if not await check_image_url(image_url):
-        await interaction.response.send_message("The provided URL does not point to a valid image.")
+@tree.command(name="edit_image", description="Edit an image with an image")
+@discord.app_commands.describe(
+    prompt="The prompt to edit the image with",
+    attachment="Image attachment to edit. Choose either this or provide an image URL.",
+    image_url="URL of the image to edit. Choose either this or upload an image."
+)
+async def edit_command(
+    interaction: discord.Interaction,
+    prompt: str,
+    attachment: discord.Attachment | None = None,
+    image_url: str | None = None
+):
+    if attachment:
+        image_url = attachment.url
+    elif image_url:
+        if not await check_image_url(image_url):
+            await interaction.response.send_message("The provided URL does not point to a valid image.")
+            return
+    else:
+        await interaction.response.send_message("Please provide either an image attachment or an image URL.")
         return
+
     await interaction.response.defer()
     try:
         image = await edit_image(image_url, prompt)
-        await interaction.followup.send(image)
-    except Exception as e:
-        await interaction.followup.send(f"Error editing image: {str(e)}")
-
-@tree.command(name="edit_image", description="Edit an image with an image")
-async def edit_command(interaction: discord.Interaction, attachment: discord.Attachment, prompt: str):
-    if not await check_image_url(attachment.url):
-        await interaction.response.send_message("The provided URL does not point to a valid image.")
-        return
-    await interaction.response.defer()
-    try:
-        image = await edit_image(attachment.url, prompt)
         await interaction.followup.send(image)
     except Exception as e:
         await interaction.followup.send(f"Error editing image: {str(e)}")
@@ -192,21 +214,24 @@ async def generate_image_command(interaction: discord.Interaction, prompt: str):
     except Exception as e:
         await interaction.followup.send(f"Error generating image: {str(e)}")
 
-async def swap_face(source_bytes: bytes, target_bytes: bytes) -> discord.File:
+async def read_bytes_from_url(url: str) -> bytes:
+    timeout = aiohttp.ClientTimeout(total=20)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "image/gif,image/*;q=0.9,*/*;q=0.8",
+    }
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(url, allow_redirects=True) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Failed to download URL: HTTP {resp.status}")
+            data = await resp.read()
+    if not data:
+        raise RuntimeError("Downloaded URL returned empty content")
+    return data
+
+def swap_face(source_bytes: bytes, target_bytes: bytes) -> discord.File:
     """Swap target face with source face and return as a Discord file."""
     try:
-        app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
-        app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
-        if not os.path.exists("models/inswapper_128.onnx"):
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx") as resp:
-                    if resp.status == 200:
-                        content = await resp.read()
-                        with open("models/inswapper_128.onnx", "wb") as f:
-                            f.write(content)
-                    else:
-                        raise RuntimeError("Failed to download inswapper model.") 
-        swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
         source_img = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
         target_img = cv2.imdecode(np.frombuffer(target_bytes, np.uint8), cv2.IMREAD_COLOR)
         if source_img is None or target_img is None:
@@ -240,7 +265,7 @@ async def kirkify(ctx):
                     else:
                         raise RuntimeError("Failed to fetch Kirk image.")
             target = await ctx.message.attachments[0].read()
-            swapped_file = await swap_face(source_bytes, target)
+            swapped_file = await asyncio.to_thread(swap_face, source_bytes, target)
             await ctx.reply(file=swapped_file)
         else:
             await ctx.reply("Please attach an image to kirkify.")
@@ -248,21 +273,160 @@ async def kirkify(ctx):
         await ctx.reply(str(e))
 
 @tree.command(name="swap", description="Swap faces in an image")
-async def swap_command(interaction: discord.Interaction, source: discord.Attachment, target: discord.Attachment):
+@discord.app_commands.describe(
+    source="Source face image upload",
+    source_url="Source face image URL",
+    target="Target image upload",
+    target_url="Target image URL"
+)
+async def swap_command(
+    interaction: discord.Interaction,
+    source: discord.Attachment | None = None,
+    source_url: str | None = None,
+    target: discord.Attachment | None = None,
+    target_url: str | None = None
+):
     await interaction.response.defer()
     try:
-        source_bytes = await source.read()
-        target_bytes = await target.read()
-        swapped_file = await swap_face(source_bytes, target_bytes)
+        if source:
+            source_bytes = await source.read()
+        elif source_url:
+            source_bytes = await read_bytes_from_url(source_url)
+        else:
+            raise ValueError("Either 'source' attachment or 'source_url' must be provided")
+
+        if target:
+            target_bytes = await target.read()
+        elif target_url:
+            target_bytes = await read_bytes_from_url(target_url)
+        else:
+            raise ValueError("Either 'target' attachment or 'target_url' must be provided")
+
+        swapped_file = await asyncio.to_thread(swap_face, source_bytes, target_bytes)
         await interaction.followup.send(file=swapped_file)
     except Exception as e:
         await interaction.followup.send(f"Error swapping faces: {str(e)}")
+
+def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
+    """Swap faces in a GIF and return as a BytesIO object."""
+    try:
+        frames = []
+        new_frames = []
+        durations = []
+
+        with Image.open(BytesIO(gif_bytes)) as im:
+            for idx, frame in enumerate(ImageSequence.Iterator(im)):
+                if idx % frame_step == 0:
+                    frames.append(frame.convert("RGB"))
+                    durations.append(frame.info.get('duration', 100) * frame_step)
+        if not frames:
+            raise RuntimeError("No frames found in GIF")
+
+        source_img = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if source_img is None:
+            raise RuntimeError("Failed to decode source image")
+        source_faces = app_gif.get(source_img)
+        if not source_faces:
+            raise RuntimeError("No faces detected in the source image")
+        source_face = source_faces[0]
+
+        for i in range(len(frames)):
+            try:
+                frame_np = np.array(frames[i])
+                target_img = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+                
+                target_faces = app_gif.get(target_img)
+                if not target_faces:
+                    print(f"No faces detected in frame {i}, skipping face swap.")
+                    new_frames.append(frames[i])
+                    continue
+                
+                target_faces = sorted(target_faces, key=lambda x: x.bbox[0])
+                result = target_img.copy()
+                for face in target_faces:
+                    result = swapper.get(result, face, source_face, paste_back=True)
+                
+                result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+                new_frames.append(Image.fromarray(result_rgb))
+            except Exception as e:
+                print(f"Error processing frame {i}: {str(e)}")
+                new_frames.append(frames[i])
+                continue
+        
+        if not new_frames:
+            raise RuntimeError("Face swapping failed for all frames")
+
+        output = BytesIO()
+        new_frames[0].save(
+            output,
+            format="GIF",
+            save_all=True,
+            append_images=new_frames[1:],
+            optimize=False,
+            duration=durations,
+            loop=0,
+            disposal=2
+        )
+        output.seek(0)
+        if output.getbuffer().nbytes > 10 * 1024 * 1024:
+            print("Output GIF exceeds 10MB, reducing quality to fit within Discord limits.")
+            resized_frames = []
+            for frame in new_frames:
+                resized_frame = frame.resize((frame.width // 2, frame.height // 2), Image.Resampling.LANCZOS)
+                resized_frames.append(resized_frame)
+            output = BytesIO()
+            resized_frames[0].save(
+                output,
+                format="GIF",
+                save_all=True,
+                append_images=resized_frames[1:],
+                optimize=True,
+                duration=durations,
+                loop=0,
+                disposal=2
+            )
+            output.seek(0)
+        return output
+    except Exception as e:
+        raise RuntimeError(e)
+
+@tree.command(name="swap_gif", description="Swap faces in a GIF")
+@discord.app_commands.describe(
+    source="Source face image upload",
+    gif="Target GIF upload. Choose either this or provide a URL.",
+    gif_url="Target GIF URL. Choose either this or upload a file.",
+)
+async def swap_gif_command(
+    interaction: discord.Interaction,
+    source: discord.Attachment,
+    gif: discord.Attachment | None = None,
+    gif_url: str | None = None
+):
+    await interaction.response.defer()
+    try:
+        start = time.time()
+        source_bytes = await source.read()
+        if gif:
+            gif_bytes = await gif.read()
+        elif gif_url:
+            gif_bytes = await read_bytes_from_url(gif_url)
+        else:
+            raise ValueError("Either 'gif' attachment or 'gif_url' must be provided")
+        async with asyncio.timeout(300):
+            swapped_gif = await asyncio.to_thread(swap_gif, source_bytes, gif_bytes)
+        print(f"GIF face swap completed in {time.time() - start:.2f} seconds")
+        await interaction.followup.send(file=discord.File(swapped_gif, filename="swapped.gif"))
+    except TimeoutError:
+        await interaction.followup.send("Face swapping process took too long and timed out. Please try again with a smaller GIF or fewer faces.")
+    except Exception as e:
+        await interaction.followup.send(f"Error swapping faces in GIF: {str(e)}")
 
 @tree.command(name="glizzy", description="Toggle glizzification of images")
 async def glizzy_command(interaction: discord.Interaction):
     global glizzy
     glizzy = not glizzy
     await interaction.response.send_message(f"Glizzification turned {'on' if glizzy else 'off'}.")
+
 
 @tree.command(name="help", description="Show help message")
 async def help_command(interaction: discord.Interaction):
@@ -278,7 +442,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/glizzy", value="Toggle glizzification of images. When on, any image attached or linked in a user message will be glizzified.", inline=False)
     embed.add_field(name="Image editing",value="Attach an image and '@GlizzyBot !edit [prompt]' to edit the image.", inline=False)
     embed.add_field(name="!kirkify", value="Attach an image or provide an image URL to kirkify it.", inline=False)
-    embed.add_field(name="/swap", value="Swaps the face in the target image with the face in the source image. Works best with full body images.", inline=False)
+    embed.add_field(name="/swap", value="Swaps the face in the target image with the face in the source image", inline=False)
+    embed.add_field(name="/swap_gif", value="Swaps the face in the target GIF with the face in the source image.", inline=False)
     embed.add_field(name="/generate_image", value="Generate an image from a prompt.", inline=False)
     embed.add_field(name="/models", value="List available models", inline=False)
     embed.add_field(name="/providers", value="List available providers", inline=False)
@@ -287,8 +452,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/set_provider", value="Set the provider for text responses", inline=False)
     embed.add_field(name="/set_model", value="Set the model for text responses", inline=False)
     embed.add_field(name="/reset", value="Reset provider and model to default", inline=False)
-    embed.add_field(name="/edit_url", value="Edit an image with a url. Alternative command for @GlizzyBot !edit", inline=False)
-    embed.add_field(name="/edit_image", value="Edit an image with an attached image. Alternative command for @GlizzyBot !edit", inline=False)
+    embed.add_field(name="/edit_image", value="Edit an image with an attached image or url. Alternative command for @GlizzyBot !edit", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @client.event
