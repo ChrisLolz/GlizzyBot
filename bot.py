@@ -17,19 +17,22 @@ import cv2
 import insightface
 import numpy as np
 
+async def ensure_inswapper_model() -> None:
+    if not os.path.exists("models/inswapper_128.onnx"):
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx") as resp:
+                if resp.status == 200:
+                    content = await resp.read()
+                    with open("models/inswapper_128.onnx", "wb") as f:
+                        f.write(content)
+                else:
+                    raise RuntimeError("Failed to download inswapper model.")
+
 app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
 app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
-if not os.path.exists("models/inswapper_128.onnx"):
-    with aiohttp.ClientSession() as session:
-        with session.get("https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx") as resp:
-            if resp.status == 200:
-                content = resp.read()
-                with open("models/inswapper_128.onnx", "wb") as f:
-                    f.write(content)
-            else:
-                raise RuntimeError("Failed to download inswapper model.")
 app_gif = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
 app_gif.prepare(ctx_id=0, det_size=(128, 128), det_thresh=0.3)
+asyncio.run(ensure_inswapper_model())
 swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
 
 g4f.debug.logging = True

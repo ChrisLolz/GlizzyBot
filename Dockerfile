@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 COPY bot.py .
-COPY .env .
 RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "bot.py"]
