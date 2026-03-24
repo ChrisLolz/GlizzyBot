@@ -21,4 +21,4 @@ Meant for personal usage, not for large scale.
 
 - Run container:
 
-```docker run glizzybot```
+```docker run -v .env:/app/env -v har_and_cookies:/app/har_and_cookies glizzybot```
