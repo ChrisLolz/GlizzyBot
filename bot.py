@@ -31,7 +31,7 @@ async def ensure_inswapper_model() -> None:
 app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
 app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
 app_gif = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
-app_gif.prepare(ctx_id=0, det_size=(128, 128), det_thresh=0.3)
+app_gif.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
 asyncio.run(ensure_inswapper_model())
 swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
 
@@ -67,7 +67,6 @@ model=os.getenv("MODEL", "default")
 provider=os.getenv("PROVIDER")
 image_model=os.getenv("IMAGE_MODEL")
 image_provider=os.getenv("IMAGE_PROVIDER")
-frame_step= int(os.getenv("GIF_FRAME_STEP", 1))
 glizzy=True
 
 async def check_image_url(url: str) -> bool:
@@ -310,7 +309,7 @@ async def swap_command(
     except Exception as e:
         await interaction.followup.send(f"Error swapping faces: {str(e)}")
 
-def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
+def swap_gif(source_bytes: bytes, gif_bytes: bytes, frame_step: int = 1) -> BytesIO:
     """Swap faces in a GIF and return as a BytesIO object."""
     try:
         frames = []
@@ -324,7 +323,7 @@ def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
                     durations.append(frame.info.get('duration', 100) * frame_step)
         if not frames:
             raise RuntimeError("No frames found in GIF")
-
+        
         source_img = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
         if source_img is None:
             raise RuntimeError("Failed to decode source image")
@@ -371,12 +370,14 @@ def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
             disposal=2
         )
         output.seek(0)
-        if output.getbuffer().nbytes > 10 * 1024 * 1024:
+        working_frames = new_frames
+        while output.getbuffer().nbytes > 10 * 1024 * 1024:
             print("Output GIF exceeds 10MB, reducing quality to fit within Discord limits.")
             resized_frames = []
-            for frame in new_frames:
+            for frame in working_frames:
                 resized_frame = frame.resize((frame.width // 2, frame.height // 2), Image.Resampling.LANCZOS)
                 resized_frames.append(resized_frame)
+            working_frames = resized_frames
             output = BytesIO()
             resized_frames[0].save(
                 output,
@@ -384,6 +385,7 @@ def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
                 save_all=True,
                 append_images=resized_frames[1:],
                 optimize=True,
+                quality=75,
                 duration=durations,
                 loop=0,
                 disposal=2
@@ -398,12 +400,14 @@ def swap_gif(source_bytes: bytes, gif_bytes: bytes) -> BytesIO:
     source="Source face image upload",
     gif="Target GIF upload. Choose either this or provide a URL.",
     gif_url="Target GIF URL. Choose either this or upload a file.",
+    frame_step="Process every Nth frame to speed up swapping (default: 1, process every frame)"
 )
 async def swap_gif_command(
     interaction: discord.Interaction,
     source: discord.Attachment,
     gif: discord.Attachment | None = None,
-    gif_url: str | None = None
+    gif_url: str | None = None,
+    frame_step: int = 1
 ):
     await interaction.response.defer()
     try:
@@ -415,8 +419,8 @@ async def swap_gif_command(
             gif_bytes = await read_bytes_from_url(gif_url)
         else:
             raise ValueError("Either 'gif' attachment or 'gif_url' must be provided")
-        async with asyncio.timeout(300):
-            swapped_gif = await asyncio.to_thread(swap_gif, source_bytes, gif_bytes)
+        async with asyncio.timeout(600):
+            swapped_gif = await asyncio.to_thread(swap_gif, source_bytes, gif_bytes, frame_step)
         print(f"GIF face swap completed in {time.time() - start:.2f} seconds")
         await interaction.followup.send(file=discord.File(swapped_gif, filename="swapped.gif"))
     except TimeoutError:
