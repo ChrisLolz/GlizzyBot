@@ -434,6 +434,41 @@ async def glizzy_command(interaction: discord.Interaction):
     glizzy = not glizzy
     await interaction.response.send_message(f"Glizzification turned {'on' if glizzy else 'off'}.")
 
+@tree.command(name="exclude_user", description="Exclude a user from glizzification")
+async def exclude_user_command(interaction: discord.Interaction, user: discord.User):
+    role_name = "No Glizzy"
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if not role:
+        role = await interaction.guild.create_role(name=role_name)
+    if role in user.roles:
+        await user.remove_roles(role)
+        await interaction.response.send_message(f"{user.mention} is no longer excluded from glizzification.")
+    else:
+        await user.add_roles(role)
+        await interaction.response.send_message(f"{user.mention} is now excluded from glizzification.")
+
+async def ask(message: str) -> str:
+    response = g4f_client.chat.completions.create(
+        stream=True,
+        model=model if model != "default" else None,
+        provider=provider,
+        messages=[{"role": "user", "content": message}, {"role": "system", "content": "Your responses should like text messages (under 1000 characters) so no headers or line breaks, don't include character count in response"}]
+    )
+    content = ""
+    async for chunk in response:
+        if chunk.choices[0].delta.content:
+            content += chunk.choices[0].delta.content
+    return content
+
+@tree.command(name="ask", description="Ask a question or have a conversation with the bot")
+async def ask_command(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    try:
+        response = await ask(message)
+        for i in range(0, len(response), 2000):
+            await interaction.followup.send(response[i:i+2000])
+    except Exception as e:
+        await interaction.followup.send(f"Error generating response: {str(e)}")
 
 @tree.command(name="help", description="Show help message")
 async def help_command(interaction: discord.Interaction):
@@ -447,6 +482,8 @@ async def help_command(interaction: discord.Interaction):
         """
     )
     embed.add_field(name="/glizzy", value="Toggle glizzification of images. When on, any image attached or linked in a user message will be glizzified.", inline=False)
+    embed.add_field(name="/exclude_user", value="Exclude a user from glizzification.", inline=False)
+    embed.add_field(name="/ask", value="Ask a question or have a conversation with the bot. Mention the bot and type your message.", inline=False)
     embed.add_field(name="Image editing",value="Attach an image and '@GlizzyBot !edit [prompt]' to edit the image.", inline=False)
     embed.add_field(name="!kirkify", value="Attach an image or provide an image URL to kirkify it.", inline=False)
     embed.add_field(name="/swap", value="Swaps the face in the target image with the face in the source image", inline=False)
@@ -477,7 +514,6 @@ async def on_message(message: discord.Message) -> None:
     await client.process_commands(message)
     if message.content.startswith("!kirkify"):
         return
-
     if client.user in message.mentions:
         async with message.channel.typing():
             try:
@@ -486,20 +522,9 @@ async def on_message(message: discord.Message) -> None:
                         image = await edit_image(message.attachments[0].url, message.content.replace(f"<@{client.user.id}>", "").replace("!edit", "").strip())
                         await message.reply(image)
                 else:
-                    async with asyncio.timeout(60):
-                        response = g4f_client.chat.completions.create(
-                                stream=True,
-                                model=model if model != "default" else None,
-                                provider=provider,
-                                image=message.attachments[0].url if message.attachments else None,
-                                messages=[{"role": "user", "content": message.content.replace(f"<@{client.user.id}>", "").strip()}],
-                        )
-                        content = ""
-                        async for chunk in response:
-                            if chunk.choices[0].delta.content:
-                                content += chunk.choices[0].delta.content
-                        for i in range(0, len(content), 2000):
-                            await message.reply(content[i:i+2000])
+                    response = await ask(message.content.replace(f"<@{client.user.id}>", "").strip())
+                    for i in range(0, len(response), 2000):
+                        await message.reply(response[i:i+2000])
             except asyncio.TimeoutError:
                 await message.reply("Sorry, the request timed out. Please try again.")
             except Exception as e:
@@ -509,7 +534,8 @@ async def on_message(message: discord.Message) -> None:
     if glizzy:
         if message.attachments:
             for attachment in message.attachments:
-                if attachment.content_type and attachment.content_type.startswith("image/"):
+                role = discord.utils.get(message.author.roles, name="No Glizzy")
+                if not role and attachment.content_type and attachment.content_type.startswith("image/"):
                     glizzy_url = await edit_image(attachment.url, "Make everyone or everything in the image eat a hot dog")
                     await message.reply(glizzy_url)
             return
