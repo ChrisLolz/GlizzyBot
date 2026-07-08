@@ -1,0 +1,7 @@
+services:
+  glizzybot:
+    image: glizzybot:latest
+    restart: unless-stopped
+    volumes:
+      - .env:/app/.env
+      - ./har_and_cookies:/app/har_and_cookies
