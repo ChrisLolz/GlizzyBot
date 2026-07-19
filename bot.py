@@ -16,6 +16,15 @@ import g4f.debug
 import cv2
 import insightface
 import numpy as np
+import onnxruntime
+import types
+import torchvision.transforms.functional
+_fake_module = types.ModuleType('torchvision.transforms.functional_tensor')
+_fake_module.rgb_to_grayscale = torchvision.transforms.functional.rgb_to_grayscale
+import sys
+sys.modules['torchvision.transforms.functional_tensor'] = _fake_module
+
+from gfpgan import GFPGANer
 
 async def ensure_inswapper_model() -> None:
     if not os.path.exists("models/inswapper_128.onnx"):
@@ -28,12 +37,20 @@ async def ensure_inswapper_model() -> None:
                 else:
                     raise RuntimeError("Failed to download inswapper model.")
 
-app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
+app = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=onnxruntime.get_available_providers())
 app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
-app_gif = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=["CPUExecutionProvider"])
+app_gif = insightface.app.FaceAnalysis(name="buffalo_l", root='./', providers=onnxruntime.get_available_providers())
 app_gif.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
 asyncio.run(ensure_inswapper_model())
-swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=["CPUExecutionProvider"])
+swapper = insightface.model_zoo.get_model('models/inswapper_128.onnx', providers=onnxruntime.get_available_providers())
+
+gfpgan_enhancer = GFPGANer(
+    model_path='https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth',
+    upscale=1,
+    arch='clean',
+    channel_multiplier=2,
+    bg_upsampler=None
+)
 
 g4f.debug.logging = True
 
@@ -92,7 +109,6 @@ async def edit_image(image_url: str, prompt: str) -> str:
         response = await g4f_client.images.async_create_variation(
             image=image_url,
             prompt=prompt,
-            model="qwen3.5-plus",
             provider=Provider.Qwen,
             response_format="url"
         )
@@ -231,8 +247,23 @@ async def read_bytes_from_url(url: str) -> bytes:
         raise RuntimeError("Downloaded URL returned empty content")
     return data
 
+def enhance_face(image: np.ndarray, weight: float = 1.0) -> np.ndarray:
+    """Enhance a face image using GFPGAN.
+    
+    Args:
+        image: Input BGR image as numpy array.
+        weight: Blend between original and enhanced (0.0=no effect, 1.0=full effect).
+    """
+    try:
+        _, _, enhanced = gfpgan_enhancer.enhance(image, weight=weight)
+        return enhanced
+    except Exception as e:
+        print(f"Face enhancement failed, using original: {e}")
+        return image
+
+
 def swap_face(source_bytes: bytes, target_bytes: bytes) -> discord.File:
-    """Swap target face with source face and return as a Discord file."""
+    """Swap target face with source face, enhance it, and return as a Discord file."""
     try:
         source_img = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
         target_img = cv2.imdecode(np.frombuffer(target_bytes, np.uint8), cv2.IMREAD_COLOR)
@@ -243,14 +274,15 @@ def swap_face(source_bytes: bytes, target_bytes: bytes) -> discord.File:
         if not source_faces:
             raise RuntimeError("No faces detected in the source image")
         target_faces = app.get(target_img)
-        target_faces = sorted(target_faces, key = lambda x : x.bbox[0])
         if not target_faces:
             raise RuntimeError("No faces detected in the target image")
+        # Pick the biggest face by bounding box area
+        target_face = max(target_faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         
         source_face = source_faces[0]
         result = target_img.copy()
-        for face in target_faces:
-            result = swapper.get(result, face, source_face, paste_back=True)
+        result = swapper.get(result, target_face, source_face, paste_back=True)
+        result = enhance_face(result)
         _, buffer = cv2.imencode(".jpg", result)
         return discord.File(BytesIO(buffer.tobytes()), filename="swapped.jpg")
     except Exception as e:
@@ -343,10 +375,10 @@ def swap_gif(source_bytes: bytes, gif_bytes: bytes, frame_step: int = 1) -> Byte
                     new_frames.append(frames[i])
                     continue
                 
-                target_faces = sorted(target_faces, key=lambda x: x.bbox[0])
+                # Pick the biggest face by bounding box area
+                target_face = max(target_faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
                 result = target_img.copy()
-                for face in target_faces:
-                    result = swapper.get(result, face, source_face, paste_back=True)
+                result = swapper.get(result, target_face, source_face, paste_back=True)
                 
                 result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
                 new_frames.append(Image.fromarray(result_rgb))

@@ -1,7 +1,8 @@
-discord.py>=2.4.0
-python-dotenv>=1.0.1
-aiohttp>=3.8.0
-opencv-contrib-python-headless>=4.5.0
-insightface>=0.7.3
-Pillow>=9.0.0
-g4f[all]>=0.1.0
+discord.py
+python-dotenv
+aiohttp
+insightface
+Pillow
+g4f[all] @ git+https://github.com/ChrisLolz/gpt4free.git@qwen
+basicsr-fixed
+gfpgan

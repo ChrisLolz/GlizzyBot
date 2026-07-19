@@ -1,6 +1,7 @@
 services:
   glizzybot:
-    image: glizzybot:latest
+    build: .
+    container_name: glizzybot
     restart: unless-stopped
     volumes:
       - .env:/app/.env
