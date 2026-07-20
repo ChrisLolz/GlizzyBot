@@ -2,6 +2,7 @@ discord.py
 python-dotenv
 aiohttp
 insightface
+opencv-python-headless
 Pillow
 g4f[all] @ git+https://github.com/ChrisLolz/gpt4free.git@qwen
 basicsr-fixed
